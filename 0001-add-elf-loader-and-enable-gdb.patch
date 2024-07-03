@@ -1,0 +1,462 @@
+From 39d3730055490a29e3d716134315caa46fc146d1 Mon Sep 17 00:00:00 2001
+From: Keisuke Iida <cmpl.error@gmail.com>
+Date: Tue, 4 Jun 2024 02:16:32 +0900
+Subject: [PATCH] add: elf loader and enable gdb
+
+---
+ .gdbinit                 |   4 ++
+ Makefile                 |   7 +++
+ bootloader/Makefile      |   2 +-
+ bootloader/bootloader.c  |  26 ++++++--
+ bootloader/elf.c         | 129 +++++++++++++++++++++++++++++++++++++++
+ bootloader/elf.h         |  79 ++++++++++++++++++++++++
+ bootloader/include/efi.h |   5 +-
+ kernel/Makefile          |  15 +++--
+ kernel/kernel.elf.ld     |  32 ++++++++++
+ 9 files changed, 285 insertions(+), 14 deletions(-)
+ create mode 100644 .gdbinit
+ create mode 100644 bootloader/elf.c
+ create mode 100644 bootloader/elf.h
+ create mode 100644 kernel/kernel.elf.ld
+
+diff --git a/.gdbinit b/.gdbinit
+new file mode 100644
+index 0000000..971de37
+--- /dev/null
++++ b/.gdbinit
+@@ -0,0 +1,4 @@
++target remote :1234
++file kernel/kernel.elf
++set substitute-path /work/kernel ./kernel
++b init_intr
+diff --git a/Makefile b/Makefile
+index ee2093d..cd1dea8 100644
+--- a/Makefile
++++ b/Makefile
+@@ -22,10 +22,17 @@ qemu:
+ 		-object filter-dump,id=f1,netdev=n1,file=dump.pcap \
+ 		-monitor unix:qemu-monitor-socket,server,nowait
+ 
++qemu-gdb:
++	qemu-system-x86_64 -m 4G -bios ./OVMF.fd -drive format=raw,file=fat:rw:./fs -smp 32\
++		-netdev user,id=n1,hostfwd=tcp::8080-:80 -device virtio-net-pci,netdev=n1\
++		-object filter-dump,id=f1,netdev=n1,file=dump.pcap \
++		-S -gdb tcp::1234
++
+ copy: bootloader kernel apps
+ 	mkdir -p fs/EFI/BOOT
+ 	cp bootloader/BOOTX64.EFI fs/EFI/BOOT/
+ 	cp kernel/kernel ./fs/
++	cp kernel/kernel.elf ./fs/
+ 	cp apps/app1 ./fs/
+ 	cp apps/app2 ./fs/
+ 	cp apps/app3 ./fs/
+diff --git a/bootloader/Makefile b/bootloader/Makefile
+index 0838ad7..66b1e20 100644
+--- a/bootloader/Makefile
++++ b/bootloader/Makefile
+@@ -7,7 +7,7 @@ CFLAGS += -Wl,--subsystem,10
+ 
+ all: BOOTX64.EFI
+ 
+-BOOTX64.EFI: bootloader.o efi.o file.o hardware_info.o memory.o util.o
++BOOTX64.EFI: bootloader.o efi.o elf.o file.o hardware_info.o memory.o util.o
+ 	$(CC) $(CFLAGS) -e efi_main -o $@ $^
+ 
+ %.o: %.c
+diff --git a/bootloader/bootloader.c b/bootloader/bootloader.c
+index 2c91680..7fddd78 100644
+--- a/bootloader/bootloader.c
++++ b/bootloader/bootloader.c
+@@ -3,11 +3,14 @@
+ #include <hardware_info.h>
+ #include <memory.h>
+ #include <util.h>
++#include "elf.h"
+ 
+ #define MB 1048576 // 1024 * 1024
+ #define KERNEL_NAME_LEN  6
++#define KERNEL_ELF_NAME_LEN  10
+ static const CHAR16 AppleFirmwareVendor[6] = L"Apple";
+ static CHAR16 KERNEL_NAME[KERNEL_NAME_LEN] = L"kernel";
++static CHAR16 KERNEL_ELF_NAME[KERNEL_ELF_NAME_LEN] = L"kernel.elf";
+ static CHAR16 APP1_NAME[] = L"app1";
+ static CHAR16 APP2_NAME[] = L"app2";
+ static CHAR16 APP3_NAME[] = L"app3";
+@@ -65,6 +68,8 @@ void ap_sum(void *_sum) {
+ }
+ 
+ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *st) {
++  void *bss_start;
++  UINTN bss_size;
+   EFI_STATUS status;
+ 
+   efi_init(st);
+@@ -92,6 +97,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *st) {
+ 
+   // Assuming UEFI firmware recognizes multiple volumes, find the volume where kernel is located
+   struct EFI_FILE_PROTOCOL *kernel_file = NULL;
++  struct EFI_FILE_PROTOCOL *kernel_elf_file = NULL;
+   struct EFI_FILE_PROTOCOL *app1_file = NULL;
+   struct EFI_FILE_PROTOCOL *app2_file = NULL;
+   struct EFI_FILE_PROTOCOL *app3_file = NULL;
+@@ -126,6 +132,9 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *st) {
+         status = root->Open(root, &kernel_file, KERNEL_NAME, EFI_FILE_MODE_READ, 0);
+         assert(status, L"EFI_FILE_PROTOCOL#Read error");
+ 
++	status = root->Open(root, &kernel_elf_file, KERNEL_ELF_NAME, EFI_FILE_MODE_READ, 0);
++	// don't check status
++
+         status = root->Open(root, &app1_file, APP1_NAME, EFI_FILE_MODE_READ, 0);
+         assert(status, L"EFI_FILE_PROTOCOL#Read error");
+ 
+@@ -145,19 +154,21 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *st) {
+     while (1);
+   }
+ 
+-  struct header {
+-    void *bss_start;
+-    UINTN bss_size;
+-  } head;
++  struct header head;
+   unsigned long long head_size = sizeof(head);
+ 
+-  {
++  if (kernel_elf_file && loadelf(kernel_elf_file, (void *)KERNEL_START, &head) == 0) {
++    puts(L"ELF Kernel Loaded\r\n");
++  } else {
+     unsigned long long kernel_size = file_size(kernel_file);
+     load_file(kernel_file, (void *)&head, head_size);
+     kernel_size -= head_size;
+     load_file(kernel_file, (void *)KERNEL_START, kernel_size);
+   }
+ 
++  bss_start = head.bss_start;
++  bss_size = head.bss_size;
++
+   {
+     unsigned long long app1_size = file_size(app1_file);
+     load_file(app1_file, (void *)&head, head_size);
+@@ -180,10 +191,13 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, struct EFI_SYSTEM_TABLE *st) {
+   }
+ 
+   kernel_file->Close(kernel_file);
++  if (kernel_elf_file)
++    kernel_elf_file->Close(kernel_elf_file);
+   app1_file->Close(app1_file);
+   app2_file->Close(app2_file);
+   app3_file->Close(app3_file);
+-  SystemTable->BootServices->SetMem(head.bss_start, head.bss_size, 0);
++  if (bss_start && bss_size)
++    SystemTable->BootServices->SetMem(bss_start, bss_size, 0);
+ 
+   unsigned long long arg1 = (unsigned long long)SystemTable;
+   unsigned long long arg2 = (unsigned long long)&hardware_info;
+diff --git a/bootloader/elf.c b/bootloader/elf.c
+new file mode 100644
+index 0000000..d6f4d21
+--- /dev/null
++++ b/bootloader/elf.c
+@@ -0,0 +1,129 @@
++#include <efi.h>
++#include <file.h>
++#include <util.h>
++#include "elf.h"
++
++static int
++iself(struct ehdr *e)
++{
++	return (e->e_ident[0] == 0x7f && e->e_ident[1] == 'E' &&
++		e->e_ident[2] == 'L' && e->e_ident[3] == 'F') &&
++		e->e_type == ET_EXEC;
++}
++
++static void
++elfread(struct EFI_FILE_PROTOCOL *file, ulong offset, void *dst, UINTN size)
++{
++	EFI_STATUS status;
++
++	file->SetPosition(file, offset);
++	status = file->Read(file, &size, dst);
++	assert(status, L"read error");
++}
++
++static int
++elfstrtable(struct EFI_FILE_PROTOCOL *file, struct ehdr *e, struct shdr *strtable)
++{
++	ulong offset;
++	uint size = sizeof (*strtable);
++
++	if (e->e_shstrndx == SHN_UNDEF)
++	{
++		return -1;
++	}
++
++	offset = e->e_shoff + e->e_shentsize * e->e_shstrndx;
++
++	elfread(file, offset, strtable, size);
++
++	return 0;
++}
++
++static void
++sectionname(struct EFI_FILE_PROTOCOL *file, struct shdr *strtable, uint sh_name, char *name)
++{
++	ulong offset = strtable->sh_offset + sh_name;
++	UINTN size = 32;
++
++	elfread(file, offset, name, size);
++}
++
++static void
++getbss(struct EFI_FILE_PROTOCOL *file, struct ehdr *e, struct header *hdr)
++{
++	struct shdr shdr;
++	struct shdr strtable;
++	int bssfound = 0;
++	UINTN ssz = e->e_shentsize;
++	ulong soff;
++	char name[32];
++
++	assert (sizeof(shdr) != e->e_shentsize, L"oi");
++
++	elfstrtable(file, e, &strtable);	
++
++	soff = e->e_shoff;
++	for (int i = 0; i < e->e_shnum; i++, soff += e->e_shentsize)
++	{
++		elfread(file, soff, &shdr, ssz);
++
++		sectionname(file, &strtable, shdr.sh_name, name);
++
++		if (compare(".bss", name, 4))
++		{
++			bssfound = 1;
++			puts(L"found bss ");
++			break;
++		}
++	}
++
++	if (bssfound)
++	{
++		hdr->bss_start = (void *)shdr.sh_addr;
++		hdr->bss_size = shdr.sh_size;
++	}
++	else
++	{
++		hdr->bss_start = NULL;
++		hdr->bss_size = 0;
++	}
++}
++
++int
++loadelf(struct EFI_FILE_PROTOCOL *file, void *dst, struct header *hdr)
++{
++	struct ehdr e;
++	UINTN esz = sizeof (e);
++	EFI_STATUS status;
++	struct phdr phdr;
++	UINTN psz = sizeof (phdr);
++	ulong poff;
++	ulong filesz;
++
++	status = file->Read(file, &esz, &e);
++	assert(status, L"read error");
++
++	if (!iself(&e))
++	{
++		return -1;
++	}
++
++	getbss(file, &e, hdr);
++
++	poff = e.e_phoff;
++	for (int i = 0; i < e.e_phnum; i++, poff += sizeof (phdr))
++	{
++		elfread(file, poff, &phdr, psz);
++
++		if (phdr.p_type != PT_LOAD)
++		{
++			continue;
++		}
++
++		filesz = phdr.p_filesz;
++
++		elfread(file, phdr.p_offset, dst, filesz);
++	}
++
++	return 0;
++}
+diff --git a/bootloader/elf.h b/bootloader/elf.h
+new file mode 100644
+index 0000000..72ba719
+--- /dev/null
++++ b/bootloader/elf.h
+@@ -0,0 +1,79 @@
++typedef unsigned char 		uchar;
++typedef unsigned short 		ushort;
++typedef unsigned int 		uint;
++typedef unsigned long long 	ulong;
++
++/* e_type */
++#define ET_NONE 0
++#define ET_REL  1
++#define ET_EXEC 2
++#define ET_DYN  3
++#define ET_CORE 4
++
++/* p_type */
++#define PT_NULL 0
++#define PT_LOAD 1
++#define PT_DYNAMIC  2
++#define PT_INTERP 3
++#define PT_NOTE 4
++#define PT_SHLIB  5
++#define PT_PHDR 6
++
++/* p_flags */
++#define PF_X  0x1
++#define PF_W  0x2
++#define PF_R  0x4
++#define PF_MASKOS 0x00ff0000
++#define PF_MASKPROC 0xff000000
++
++#define SHN_UNDEF	0
++
++struct ehdr {
++	uchar	e_ident[16];
++	ushort	e_type;
++	ushort	e_machine;
++	uint	e_version;
++	ulong	e_entry;
++	ulong	e_phoff;
++	ulong	e_shoff;
++	uint	e_flags;
++	ushort	e_ehsize;
++	ushort	e_phentsize;
++	ushort	e_phnum;
++	ushort	e_shentsize;
++	ushort	e_shnum;
++	ushort	e_shstrndx;
++} __attribute__((packed));
++
++struct phdr {
++	uint	p_type;
++	uint	p_flags;
++	ulong	p_offset;
++	ulong	p_vaddr;
++	ulong	p_paddr;
++	ulong	p_filesz;
++	ulong	p_memsz;
++	ulong	p_align;
++} __attribute__((packed));
++
++struct shdr {
++	uint	sh_name;
++	uint	sh_type;
++	ulong	sh_flags;
++	ulong	sh_addr;
++	ulong	sh_offset;
++	ulong	sh_size;
++	uint	sh_link;
++	uint	sh_info;
++	ulong	sh_addralign;
++	ulong	sh_entsize;
++} __attribute__((packed));
++
++//////////////////////////////////////////////
++
++struct header {
++	void *bss_start;
++	UINTN bss_size;
++};
++
++int loadelf(struct EFI_FILE_PROTOCOL *elf, void *dst, struct header *hdr);
+diff --git a/bootloader/include/efi.h b/bootloader/include/efi.h
+index a7d8323..decb577 100644
+--- a/bootloader/include/efi.h
++++ b/bootloader/include/efi.h
+@@ -157,7 +157,10 @@ struct EFI_FILE_PROTOCOL {
+       struct EFI_FILE_PROTOCOL *This,
+       UINTN *BufferSize,
+       void *Buffer);
+-  void *_dummy3[2];
++  void *_dummy3; // GetPosition
++  EFI_STATUS (*SetPosition)(
++      struct EFI_FILE_PROTOCOL *This,
++      UINTN Position);
+   EFI_STATUS (*GetInfo)(
+       struct EFI_FILE_PROTOCOL *This,
+       struct EFI_GUID *InformationType,
+diff --git a/kernel/Makefile b/kernel/Makefile
+index 7356c26..a06506b 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -1,10 +1,13 @@
+ CC = gcc
+-CFLAGS = -Wall -Wextra -nostdinc -nostdlib -fno-builtin -fno-common
+-LDFLAGS = -s -x
++CFLAGS = -ggdb -Wall -Wextra -nostdinc -nostdlib -fno-builtin -fno-common
++LDFLAGS =
+ 
+-all: kernel
++all: kernel kernel.elf
+ 
+-kernel: kernel.o  segmentation.o hardware.o load_gdt.o font.o sched.o interrupt.o interrupt_handler.o lapic_timer.o syscall.o memory.o
++kernel.elf: kernel.o segmentation.o hardware.o load_gdt.o font.o sched.o interrupt.o interrupt_handler.o lapic_timer.o syscall.o memory.o
++	ld $(LDFLAGS) -T kernel.elf.ld -o $@ $+
++
++kernel: kernel.o segmentation.o hardware.o load_gdt.o font.o sched.o interrupt.o interrupt_handler.o lapic_timer.o syscall.o memory.o
+ 	ld $(LDFLAGS) -T kernel.ld -o $@ $+
+ 
+ %.o: %.c
+@@ -14,6 +17,6 @@ kernel: kernel.o  segmentation.o hardware.o load_gdt.o font.o sched.o interrupt.
+ 	gcc $(CFLAGS) -c -o $@ $<
+ 
+ clean:
+-	rm -f *.o kernel
++	rm -f *.o kernel kernel.elf
+ 
+-.PHONY: all clean
++.PHONY: all debug clean
+diff --git a/kernel/kernel.elf.ld b/kernel/kernel.elf.ld
+new file mode 100644
+index 0000000..4e880d3
+--- /dev/null
++++ b/kernel/kernel.elf.ld
+@@ -0,0 +1,32 @@
++OUTPUT_FORMAT("elf64-x86-64", "elf64-x86-64", "elf64-x86-64")
++OUTPUT_ARCH(i386:x86-64)
++ENTRY(start)
++
++SECTIONS {
++	. = 0x100000000;
++
++	.text : {
++		*(.text)
++	}
++
++	. = ALIGN(4096);
++	.rodata : {
++		*(.rodata)
++	}
++
++	. = ALIGN(4096);
++	.data : {
++		*(.data)
++	}
++
++	. = ALIGN(4096);
++	.bss : {
++		__bss_start = .;
++		*(.bss .bss.*)
++		__bss_end = .;
++	}
++
++	/DISCARD/ : {
++		*(.comment .comment.*)
++	}
++}
+-- 
+2.40.0
+
