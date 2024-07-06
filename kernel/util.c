@@ -107,7 +107,7 @@ void puts(char* str) {
     putc('\n');
 }
 
-void puth(unsigned long long value, unsigned char digits_len) {
+void puth_n(unsigned long long value, unsigned char digits_len) {
     while (digits_len > 8) {
         putc('0');
         digits_len--;
@@ -118,6 +118,10 @@ void puth(unsigned long long value, unsigned char digits_len) {
         else putc('0' + digit);
         digits_len--;
     }
+}
+
+void puth(unsigned long long value, unsigned char digits_len) {
+    puth_n(value, digits_len);
     putc('\n');
 }
 

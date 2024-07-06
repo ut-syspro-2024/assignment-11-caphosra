@@ -22,5 +22,6 @@ void set_fg_color(unsigned color, unsigned* old);
 void puts_n(char* str);
 void puts(char* str);
 void puth(unsigned long long value, unsigned char digits_len);
+void puth_n(unsigned long long value, unsigned char digits_len);
 
 char strcmp_len(char* str1, char* str2, int length);

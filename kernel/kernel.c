@@ -7,6 +7,7 @@
 #include "util.h"
 #include "pm_timer.h"
 #include "syscall.h"
+#include "virtio.h"
 
 #pragma GCC diagnostic ignored "-Wunused-parameter" // For l6 (kernel_param_dummy)
 
@@ -21,6 +22,10 @@ void start(void *SystemTable __attribute__ ((unused)), struct HardwareInfo *_har
 
   init_frame_buffer(&hardware_info.fb);
   init_acpi_pm_timer(hardware_info.rsdp);
+
+  init_virtio_driver();
+
+  while (1) { }
 
   unsigned long long ret;
   unsigned long long str = (unsigned long long)"syspro\r";
