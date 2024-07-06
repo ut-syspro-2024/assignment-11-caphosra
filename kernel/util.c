@@ -131,3 +131,10 @@ char strcmp_len(char* str1, char* str2, int len) {
     }
     return 0;
 }
+
+// DO NOT USE THIS FUNCTION IF THE INTERSECTION OF RANGES IS NOT EMPTY.
+void strcpy_n(char* dest, char* src, int length) {
+    for (int idx = 0; idx < length; idx++) {
+        dest[idx] = src[idx];
+    }
+}

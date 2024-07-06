@@ -33,6 +33,13 @@ io_read_d:
     in eax, dx
     ret
 
+.global io_write_b
+io_write_b:
+    mov dx, di
+    mov ax, si
+    out dx, al
+    ret
+
 .global io_write_w
 io_write_w:
     mov dx, di
