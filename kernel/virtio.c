@@ -3,7 +3,6 @@
 #define VIRTIO_NET_ID 0x10001AF4
 
 extern int read_pci_config_data(int reg);
-extern unsigned char read_from_port(short port);
 
 unsigned int search_virtio_net() {
     for (int bus = 0; bus < 0x100; bus++) {
@@ -20,7 +19,7 @@ unsigned int search_virtio_net() {
 
 void print_mac_addr(short io_addr) {
     for (int idx = 0; idx < 6; idx++) {
-        unsigned char num = read_from_port(io_addr + idx);
+        unsigned char num = io_read_b(io_addr + idx);
         puth_n(num, 2);
         if (idx != 5) {
             puts_n(":");

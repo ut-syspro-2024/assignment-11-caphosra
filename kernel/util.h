@@ -25,3 +25,10 @@ void puth(unsigned long long value, unsigned char digits_len);
 void puth_n(unsigned long long value, unsigned char digits_len);
 
 char strcmp_len(char* str1, char* str2, int length);
+
+unsigned char io_read_b(short addr);
+unsigned short io_read_w(short addr);
+unsigned int io_read_d(short addr);
+
+void io_write_w(short addr, unsigned short item);
+void io_write_d(short addr, unsigned int item);
