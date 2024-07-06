@@ -70,7 +70,7 @@ struct virtio_net_hdr {
     le16 gso_size;
     le16 csum_start;
     le16 csum_offset;
-    le16 num_buffers;
+    // le16 num_buffers;
 };
 
 #define VIRTIO_NET_ID 0x10001AF4
@@ -135,7 +135,7 @@ void send_packet(unsigned short base_addr, char* text, int length) {
     packet->gso_size = 0;
     packet->hdr_len = sizeof(struct virtio_net_hdr);
     packet->csum_offset = 0;
-    char* content = (char*)packet + sizeof(struct virtio_net_hdr) - 2;
+    char* content = (char*)packet + sizeof(struct virtio_net_hdr);
     strcpy_n(content, "\xff\xff\xff\xff\xff\xff", 6);
     strcpy_n(content + 6, (char*)mac_addr, 6);
     strcpy_n(content + 12, "\x88\xb6", 2);
@@ -144,8 +144,8 @@ void send_packet(unsigned short base_addr, char* text, int length) {
     struct virtq_desc* desc = (struct virtq_desc*)tx_queue;
     struct virtq_avail* avail = (struct virtq_avail*)(tx_queue + get_virtq_avail_offset(queue_size));
 
-    desc->addr = (long long)packet;
-    desc->len = sizeof(struct virtio_net_hdr) - 2 + 6 + 6 + 2 + length;
+    desc->addr = (unsigned long long)packet;
+    desc->len = sizeof(struct virtio_net_hdr) + 6 + 6 + 2 + length;
     desc->flags = 0;
     desc->next = 0;
 

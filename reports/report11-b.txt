@@ -1,0 +1,9 @@
+まず, ACKNOWLEDGEとDRIVERを立てた. その上で, 必要なfeaturesを登録してからFEATURES_OKを立て, この操作がうまく行っていることを引き続きFEATURES_OKが立っているかによって確認した.
+
+次に送信のためのvirtqueueを登録するために, queue_selectを1にした. この操作をvirtqueueを登録することより先に行っておかないと上手くいかない.
+
+次に0x1000でアラインメントしたパケットにデータを詰めていく. ヘッダー以降にEthernet frameの形式に習って送りたい中身を入れる.
+
+0x1000でアラインメントしたtx_queueのdescriptorに値を詰め, そこからqueue_sizeをもちいてavailable queueのアドレスを取得して割り込みが起こらないように値を設定する. 値を設定し終えたらqueue_addrを登録し, DRIVER_OKを立てる.
+
+最後にavailable queueのインデックスをインクリメントしてからringにdescriptorを詰め, notify_queueに1を書き込む. 以上でパケットを送信できる.
