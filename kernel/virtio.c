@@ -158,11 +158,6 @@ void send_packet(unsigned short base_addr, char* text, int length) {
 
     avail->flags = VIRTQ_AVAIL_F_NO_INTERRUPT;
 
-    io_write_d(base_addr + VIRTIO_QUEUE_ADDR_OFFSET, ((unsigned long long)tx_queue) >> 12);
-
-    io_write_b(base_addr + VIRTIO_DEVICE_STATUS_OFFSET, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
-    puts("the virtio driver is ready");
-
     avail->idx++;
     avail->ring[0] = 0;
 
@@ -192,11 +187,6 @@ void recv_packet(unsigned short base_addr) {
     desc->next = 0;
 
     avail->flags = VIRTQ_AVAIL_F_NO_INTERRUPT;
-
-    io_write_d(base_addr + VIRTIO_QUEUE_ADDR_OFFSET, ((unsigned long long)rx_queue) >> 12);
-
-    io_write_b(base_addr + VIRTIO_DEVICE_STATUS_OFFSET, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
-    puts("the virtio driver is ready");
 
     avail->idx++;
     avail->ring[0] = 0;
@@ -272,6 +262,17 @@ void init_virtio_driver() {
         puts("features required are not supported by the device");
         return;
     }
+
+    io_write_w(base_addr + VIRTIO_QUEUE_SELECT_OFFSET, VIRTIO_QUEUE_RX);
+    io_write_d(base_addr + VIRTIO_QUEUE_ADDR_OFFSET, ((unsigned long long)rx_queue) >> 12);
+    puts("init rx queue");
+
+    io_write_w(base_addr + VIRTIO_QUEUE_SELECT_OFFSET, VIRTIO_QUEUE_TX);
+    io_write_d(base_addr + VIRTIO_QUEUE_ADDR_OFFSET, ((unsigned long long)tx_queue) >> 12);
+    puts("init tx queue");
+
+    io_write_b(base_addr + VIRTIO_DEVICE_STATUS_OFFSET, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
+    puts("the virtio driver is ready");
 
     puts_n("mac addr: ");
     print_mac_addr(base_addr + VIRTIO_MAC_OFFSET);
