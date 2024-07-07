@@ -52,15 +52,22 @@ unsigned int get_padded_size(int size) {
     return ((size >> 12) + 1) << 12;
 }
 
-unsigned int get_virtq_size(int queue_size) {
+unsigned int get_used_offset(int queue_size) {
     unsigned int desc_size = get_virtq_avail_offset(queue_size);
     unsigned int avail_size = get_virtq_avail_size(queue_size);
     unsigned int padded = get_padded_size(desc_size + avail_size);
-    return padded + get_virtq_used_size(queue_size);
+    return padded;
+}
+
+unsigned int get_virtq_size(int queue_size) {
+    return get_used_offset(queue_size) + get_virtq_used_size(queue_size);
 }
 
 unsigned char* rx_queue = (unsigned char*)0xbeef000;
 unsigned char* tx_queue = (unsigned char*)0xcafe000;
+
+unsigned char* rx_buffer = (unsigned char*)0xdead000;
+#define RX_BUFFER_SIZE 0x1000
 
 struct virtio_net_hdr {
 #define VIRTIO_NET_HDR_F_NEEDS_CSUM 1
@@ -169,6 +176,79 @@ void send_packet(unsigned short base_addr, char* text, int length) {
     puts("notify queue update to the device");
 }
 
+void recv_packet(unsigned short base_addr) {
+    io_write_w(base_addr + VIRTIO_QUEUE_SELECT_OFFSET, VIRTIO_QUEUE_RX);
+
+    unsigned short queue_size = io_read_w(base_addr + VIRTIO_QUEUE_SIZE_OFFSET);
+    puts_n("queue size: ");
+    puth(queue_size, 4);
+
+    struct virtq_desc* desc = (struct virtq_desc*)rx_queue;
+    struct virtq_avail* avail = (struct virtq_avail*)(rx_queue + get_virtq_avail_offset(queue_size));
+
+    desc->addr = (unsigned long long)rx_buffer;
+    desc->len = RX_BUFFER_SIZE;
+    desc->flags = 2;
+    desc->next = 0;
+
+    avail->flags = VIRTQ_AVAIL_F_NO_INTERRUPT;
+
+    io_write_d(base_addr + VIRTIO_QUEUE_ADDR_OFFSET, ((unsigned long long)rx_queue) >> 12);
+
+    io_write_b(base_addr + VIRTIO_DEVICE_STATUS_OFFSET, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK | VIRTIO_STATUS_DRIVER_OK);
+    puts("the virtio driver is ready");
+
+    avail->idx++;
+    avail->ring[0] = 0;
+
+    io_write_b(base_addr + VIRTIO_NOTIFY_QUEUE_OFFSET, VIRTIO_QUEUE_RX);
+    puts("notify queue update to the device");
+
+    struct virtq_used* used = (struct virtq_used*)(rx_queue + get_used_offset(queue_size));
+
+    unsigned short prev  = used->idx;
+    while (prev == used->idx) {
+        volatile int i = 1000000;
+        while (i--);
+    }
+
+    puts("received a packet");
+
+    unsigned int id = used->ring[0].id;
+    unsigned int len = used->ring[0].len - sizeof(struct virtio_net_hdr);
+
+    puts("flag contents:");
+
+    struct virtio_net_hdr* header = (struct virtio_net_hdr*)desc[id].addr;
+    puts_n("| flags: ");
+    puth(header->flags, 2);
+
+    puts_n("| gso type: ");
+    puth(header->gso_type, 2);
+
+    puts_n("| header length: ");
+    puth(header->hdr_len, 4);
+
+    puts_n("| gso size: ");
+    puth(header->gso_size, 4);
+
+    puts_n("| csum start: ");
+    puth(header->csum_start, 4);
+
+    puts_n("| csum offset: ");
+    puth(header->csum_offset, 4);
+
+    puts_n("| content: ");
+    char* text = ((char*)desc[id].addr) + sizeof(struct virtio_net_hdr);
+    for (unsigned int idx = 0; idx < len; idx++) {
+        puth_n(text[idx], 2);
+    }
+    puts("");
+
+    puts_n("| content length: ");
+    puth(len, 16);
+}
+
 void init_virtio_driver() {
     unsigned int config_addr = search_virtio_net();
     if (!config_addr) {
@@ -200,4 +280,6 @@ void init_virtio_driver() {
     send_packet(base_addr, "I love commit_creds(&init_cred).", 33);
 
     puts("a packet sent");
+
+    recv_packet(base_addr);
 }
