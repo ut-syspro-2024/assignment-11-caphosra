@@ -1,0 +1,6 @@
+課題Bにおいてドライバの初期化は行っているので, あとはパケットの送信のみをすればよい. 
+
+まず, 適当に用意した0x1000でアラインメントされたbufferへのアドレスをrx_queueに入れる. 次にqueue_selectにおいてrx_queueを選び, queue_sizeを得る. そのqueue_sizeをもとにavailable queueへアクセスし, VIRTQ_AVAIL_F_NO_INTERRUPTを立て, idxを加算する.
+
+その上で, rx_queueを指定してnotify_queueに書き込みを行うことで通信待機を行える. あとは先程手に入れたqueue_sizeから取得したused queueのidxを監視して, 変化したときにdescriptor経由で先述のbufferにアクセスする. このパケットの中身はヘッダーのあとに続いており, 中身のサイズはパケット全体の長さからヘッダサイズを引くことで計算できる.
+
